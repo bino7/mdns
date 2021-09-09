@@ -6,19 +6,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/miekg/dns"
-)
-
-const (
-	// defaultTTL is the default TTL value in returned DNS records in seconds.
-	defaultTTL = 120
+	"github.com/apex/log"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // Zone is the interface used to integrate with the server and
 // to serve records dynamically
 type Zone interface {
 	// Records returns DNS records in response to a DNS question.
-	Records(q dns.Question) []dns.RR
+	Resources(id uint16, q dnsmessage.Question) ([]byte, error)
 }
 
 // MDNSService is used to export a named service by implementing a Zone
@@ -31,9 +27,9 @@ type MDNSService struct {
 	IPs      []net.IP // IP addresses for the service's host
 	TXT      []string // Service TXT records
 
-	serviceAddr  string // Fully qualified service address
-	instanceAddr string // Fully qualified instance address
-	enumAddr     string // _services._dns-sd._udp.<domain>
+	serviceAddrName  dnsmessage.Name // Fully qualified service address
+	instanceAddrName dnsmessage.Name // Fully qualified instance address
+	enumAddrName     dnsmessage.Name // _services._dns-sd._udp.<domain>
 }
 
 // validateFQDN returns an error if the passed string is not a fully qualified
@@ -114,17 +110,22 @@ func NewMDNSService(instance, service, domain, hostName string, port int, ips []
 		}
 	}
 
+	serviceAddrName:= dnsmessage.MustNewName(fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain)))
+	instanceAddrName := dnsmessage.MustNewName(fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain)))
+	enumAddrName:= dnsmessage.MustNewName(fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)))
+	
+
 	return &MDNSService{
-		Instance:     instance,
-		Service:      service,
-		Domain:       domain,
-		HostName:     hostName,
-		Port:         port,
-		IPs:          ips,
-		TXT:          txt,
-		serviceAddr:  fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain)),
-		instanceAddr: fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain)),
-		enumAddr:     fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)),
+		Instance:         instance,
+		Service:          service,
+		Domain:           domain,
+		HostName:         hostName,
+		Port:             port,
+		IPs:              ips,
+		TXT:              txt,
+		serviceAddrName:  serviceAddrName,
+		instanceAddrName: instanceAddrName,
+		enumAddrName:     enumAddrName,
 	}, nil
 }
 
@@ -134,111 +135,117 @@ func trimDot(s string) string {
 }
 
 // Records returns DNS records in response to a DNS question.
-func (m *MDNSService) Records(q dns.Question) []dns.RR {
-	switch q.Name {
-	case m.enumAddr:
-		return m.serviceEnum(q)
-	case m.serviceAddr:
-		return m.serviceRecords(q)
-	case m.instanceAddr:
-		return m.instanceRecords(q)
-	case m.HostName:
-		if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
-			return m.instanceRecords(q)
-		}
-		fallthrough
-	default:
-		return nil
+func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error) {
+	builder := newBulider(id)
+	builder.EnableCompression()
+	err := builder.StartAnswers()
+	if err != nil {
+		panic(err)
 	}
+	log.Infof("%s,%s,%s,%s,%s", q.Name.String(), m.enumAddrName.String(), m.serviceAddrName.String(), m.instanceAddrName.String(), m.HostName)
+	switch q.Name.String() {
+	case m.enumAddrName.String():
+		m.serviceEnum(builder, q)
+	case m.serviceAddrName.String():
+		m.serviceRecords(builder, q)
+	case m.instanceAddrName.String():
+		m.instanceRecords(builder, q)
+	case m.HostName:
+		if q.Type == dnsmessage.TypeA || q.Type == dnsmessage.TypeAAAA {
+			m.instanceRecords(builder, q)
+		}
+	default:
+		return nil, nil
+	}
+
+	return builder.Finish()
 }
 
-func (m *MDNSService) serviceEnum(q dns.Question) []dns.RR {
-	switch q.Qtype {
-	case dns.TypeANY:
-		fallthrough
-	case dns.TypePTR:
-		rr := &dns.PTR{
-			Hdr: dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypePTR,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+func (m *MDNSService) serviceEnum(builder *dnsmessage.Builder, q dnsmessage.Question) {
+	switch q.Type {
+	case dnsmessage.TypePTR:
+		builder.PTRResource(
+			dnsmessage.ResourceHeader{
+				Name:  q.Name,
+				Type:  q.Type,
+				Class: q.Class,
+				TTL:   defaultTTL,
 			},
-			Ptr: m.serviceAddr,
-		}
-		return []dns.RR{rr}
-	default:
-		return nil
+			dnsmessage.PTRResource{
+				PTR: m.enumAddrName,
+			},
+		)
 	}
 }
 
 // serviceRecords is called when the query matches the service name
-func (m *MDNSService) serviceRecords(q dns.Question) []dns.RR {
-	switch q.Qtype {
-	case dns.TypeANY:
-		fallthrough
-	case dns.TypePTR:
+func (m *MDNSService) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
+	switch q.Type {
+	case dnsmessage.TypePTR:
 		// Build a PTR response for the service
-		rr := &dns.PTR{
-			Hdr: dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypePTR,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+		builder.PTRResource(
+			dnsmessage.ResourceHeader{
+				Name:  q.Name,
+				Type:  q.Type,
+				Class: q.Class,
+				TTL:   defaultTTL,
 			},
-			Ptr: m.instanceAddr,
-		}
-		servRec := []dns.RR{rr}
+			dnsmessage.PTRResource{
+				PTR: m.instanceAddrName,
+			},
+		)
 
 		// Get the instance records
-		instRecs := m.instanceRecords(dns.Question{
-			Name:  m.instanceAddr,
-			Qtype: dns.TypeANY,
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: TypeANY,
 		})
-
-		// Return the service record with the instance records
-		return append(servRec, instRecs...)
-	default:
-		return nil
 	}
 }
 
+func ip4ToByte(ip4 net.IP) [4]byte {
+	b := []byte(ip4)
+	return [4]byte{b[0], b[1], b[2], b[3]}
+}
+func ip16ToByte(ip16 net.IP) [16]byte {
+	b := []byte(ip16)
+	return [16]byte{b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]}
+}
+
 // serviceRecords is called when the query matches the instance name
-func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
-	switch q.Qtype {
-	case dns.TypeANY:
-		// Get the SRV, which includes A and AAAA
-		recs := m.instanceRecords(dns.Question{
-			Name:  m.instanceAddr,
-			Qtype: dns.TypeSRV,
+func (m *MDNSService) instanceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
+	switch q.Type {
+	case TypeANY:
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeSRV,
 		})
 
 		// Add the TXT record
-		recs = append(recs, m.instanceRecords(dns.Question{
-			Name:  m.instanceAddr,
-			Qtype: dns.TypeTXT,
-		})...)
-		return recs
-
-	case dns.TypeA:
-		var rr []dns.RR
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeTXT,
+		})
+		return
+	case dnsmessage.TypeA:
 		for _, ip := range m.IPs {
 			if ip4 := ip.To4(); ip4 != nil {
-				rr = append(rr, &dns.A{
-					Hdr: dns.RR_Header{
-						Name:   m.HostName,
-						Rrtype: dns.TypeA,
-						Class:  dns.ClassINET,
-						Ttl:    defaultTTL,
+				builder.AResource(
+					dnsmessage.ResourceHeader{
+						Name:  q.Name,
+						Type:  q.Type,
+						Class: q.Class,
+						TTL:   defaultTTL,
 					},
-					A: ip4,
-				})
+					dnsmessage.AResource{
+						A: ip4ToByte(ip4),
+					},
+				)
 			}
 		}
-		return rr
+		return
 
-	case dns.TypeAAAA:
-		var rr []dns.RR
+	case dnsmessage.TypeAAAA:
 		for _, ip := range m.IPs {
 			if ip.To4() != nil {
 				// TODO(reddaly): IPv4 addresses could be encoded in IPv6 format and
@@ -249,59 +256,78 @@ func (m *MDNSService) instanceRecords(q dns.Question) []dns.RR {
 			}
 
 			if ip16 := ip.To16(); ip16 != nil {
-				rr = append(rr, &dns.AAAA{
-					Hdr: dns.RR_Header{
-						Name:   m.HostName,
-						Rrtype: dns.TypeAAAA,
-						Class:  dns.ClassINET,
-						Ttl:    defaultTTL,
+
+				builder.AAAAResource(
+					dnsmessage.ResourceHeader{
+						Name:  q.Name,
+						Type:  q.Type,
+						Class: q.Class,
+						TTL:   defaultTTL,
 					},
-					AAAA: ip16,
-				})
+					dnsmessage.AAAAResource{
+						AAAA: ip16ToByte(ip16),
+					},
+				)
 			}
 		}
-		return rr
+		return
 
-	case dns.TypeSRV:
+	case dnsmessage.TypeSRV:
 		// Create the SRV Record
-		srv := &dns.SRV{
-			Hdr: dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypeSRV,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+		hostName, _ := dnsmessage.NewName(m.HostName)
+		builder.SRVResource(
+			dnsmessage.ResourceHeader{
+				Name:  q.Name,
+				Type:  q.Type,
+				Class: q.Class,
+				TTL:   defaultTTL,
 			},
-			Priority: 10,
-			Weight:   1,
-			Port:     uint16(m.Port),
-			Target:   m.HostName,
-		}
-		recs := []dns.RR{srv}
+			dnsmessage.SRVResource{
+				Priority: 10,
+				Weight:   1,
+				Port:     uint16(m.Port),
+				Target:   hostName,
+			},
+		)
 
 		// Add the A record
-		recs = append(recs, m.instanceRecords(dns.Question{
-			Name:  m.instanceAddr,
-			Qtype: dns.TypeA,
-		})...)
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeA,
+		})
 
 		// Add the AAAA record
-		recs = append(recs, m.instanceRecords(dns.Question{
-			Name:  m.instanceAddr,
-			Qtype: dns.TypeAAAA,
-		})...)
-		return recs
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeAAAA,
+		})
+		return
 
-	case dns.TypeTXT:
-		txt := &dns.TXT{
-			Hdr: dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypeTXT,
-				Class:  dns.ClassINET,
-				Ttl:    defaultTTL,
+	case dnsmessage.TypeTXT:
+		builder.TXTResource(
+			dnsmessage.ResourceHeader{
+				Name:  q.Name,
+				Type:  q.Type,
+				Class: q.Class,
+				TTL:   defaultTTL,
 			},
-			Txt: m.TXT,
-		}
-		return []dns.RR{txt}
+			dnsmessage.TXTResource{
+				TXT: m.TXT,
+			},
+		)
+		return
+	default:
+		// Get the SRV, which includes A and AAAA
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeSRV,
+		})
+
+		// Add the TXT record
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeTXT,
+		})
+		return
 	}
-	return nil
 }
