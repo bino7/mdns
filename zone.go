@@ -10,6 +10,18 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
+/*
+(Question.Name->{Type->[Resources]})
+
+_services._dns-sd._udp.<domain>(enumAddrName) -> {
+	TypePTR->[TypePTR]
+}
+
+
+
+
+*/
+
 // Zone is the interface used to integrate with the server and
 // to serve records dynamically
 type Zone interface {
@@ -110,10 +122,9 @@ func NewMDNSService(instance, service, domain, hostName string, port int, ips []
 		}
 	}
 
-	serviceAddrName:= dnsmessage.MustNewName(fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain)))
+	serviceAddrName := dnsmessage.MustNewName(fmt.Sprintf("%s.%s.", trimDot(service), trimDot(domain)))
 	instanceAddrName := dnsmessage.MustNewName(fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain)))
-	enumAddrName:= dnsmessage.MustNewName(fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)))
-	
+	enumAddrName := dnsmessage.MustNewName(fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)))
 
 	return &MDNSService{
 		Instance:         instance,
@@ -142,7 +153,8 @@ func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error
 	if err != nil {
 		panic(err)
 	}
-	log.Infof("%s,%s,%s,%s,%s", q.Name.String(), m.enumAddrName.String(), m.serviceAddrName.String(), m.instanceAddrName.String(), m.HostName)
+	log.Infof("%s,%s,%s,%s,%s", q.Name.String(), m.enumAddrName.String(), m.serviceAddrName.String(),
+		m.instanceAddrName.String(), m.HostName)
 	switch q.Name.String() {
 	case m.enumAddrName.String():
 		m.serviceEnum(builder, q)
@@ -178,6 +190,11 @@ func (m *MDNSService) serviceEnum(builder *dnsmessage.Builder, q dnsmessage.Ques
 	}
 }
 
+/*
+<instance>.<domain>.(serviceAddrName) -> {
+	TypeANY ->[TypePTR,TypeSRV,TypeTXT,TypeA,TypeAAAA]
+}
+*/
 // serviceRecords is called when the query matches the service name
 func (m *MDNSService) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
 	switch q.Type {
@@ -200,6 +217,16 @@ func (m *MDNSService) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Q
 			Name: m.instanceAddrName,
 			Type: TypeANY,
 		})
+
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeA,
+		})
+
+		m.instanceRecords(builder, dnsmessage.Question{
+			Name: m.instanceAddrName,
+			Type: dnsmessage.TypeAAAA,
+		})
 	}
 }
 
@@ -212,6 +239,15 @@ func ip16ToByte(ip16 net.IP) [16]byte {
 	return [16]byte{b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]}
 }
 
+/*
+<instance>.<service>.<domain>.(instanceAddrName) -> {
+	TypeANY->[TypeSRV,TypeTXT],
+	TypeA->[TypeA],
+	TypeAAAA->[TypeAAAA],
+	TypeSRV->[TypeSRV,TypeA,TypeAAAA],
+	TypeTXT->[TypeTXT]
+}
+*/
 // serviceRecords is called when the query matches the instance name
 func (m *MDNSService) instanceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
 	switch q.Type {
