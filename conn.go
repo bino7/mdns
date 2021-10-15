@@ -47,7 +47,7 @@ type queryResult struct {
 }
 
 const (
-	inboundBufferSize    = 512
+	inboundBufferSize    = 1024
 	defaultQueryInterval = time.Second
 	destinationAddress   = "224.0.0.251:5353"
 	maxMessageRecords    = 300
@@ -158,7 +158,6 @@ func (c *Conn) Query(ctx context.Context, params *QueryParam) (dnsmessage.Resour
 	c.sendQuestion(serviceAddr)
 	go func() {
 		<-ctx.Done()
-		c.log.Infof("Context is done")
 		c.mu.Lock()
 		for i := 0; i < len(c.queries); i++ {
 			if c.queries[i] == q {
@@ -209,7 +208,6 @@ func interfaceForRemote(remote string) (net.IP, error) {
 }
 
 func (c *Conn) sendQuestion(name string) {
-	c.log.Warnf("sendQuestion %s", name)
 	newID := uint16(atomic.AddInt32(&id, 1))
 	b := newBulider(newID)
 	b.EnableCompression()
@@ -233,8 +231,6 @@ func (c *Conn) sendQuestion(name string) {
 		c.log.Warnf("Failed to send mDNS packet %v", err)
 		return
 	}
-
-	c.log.Info("query send")
 }
 
 func (c *Conn) sendAnswer(rawAnswer []byte, dst net.Addr) {
@@ -242,7 +238,6 @@ func (c *Conn) sendAnswer(rawAnswer []byte, dst net.Addr) {
 		c.log.Warnf("Failed to send mDNS packet %v", err)
 		return
 	}
-	c.log.Info("answer send")
 }
 
 func (c *Conn) start() { //nolint gocognit
@@ -262,90 +257,107 @@ func (c *Conn) start() { //nolint gocognit
 			return
 		}
 
-		func() {
-			c.mu.RLock()
-			defer c.mu.RUnlock()
+		c.mu.RLock()
+		defer c.mu.RUnlock()
 
-			h, err := p.Start(b[:n])
+		h, err := p.Start(b[:n])
+		if err != nil {
+			c.log.Warnf("Failed to parse mDNS packet %v", err)
+			return
+		}
+
+		for i := 0; i <= maxMessageRecords; i++ {
+			q, err := p.Question()
+			if errors.Is(err, dnsmessage.ErrSectionDone) {
+				break
+			} else if err != nil {
+				c.log.Warnf("Failed to parse mDNS packet %v", err)
+				return
+			}
+			if c.zone != nil {
+				resources, err := c.zone.Resources(h.ID, q)
+				if err != nil {
+					log.Warnf("build answer error %v", err)
+					return
+				}
+				c.sendAnswer(resources, src)
+			}
+		}
+
+		err = p.SkipAllQuestions()
+		if err != nil {
+			c.log.Warnf("skipAllQuestions error %v", err)
+			return
+		}
+
+		as, err := p.AllAnswers()
+		if errors.Is(err, dnsmessage.ErrSectionDone) {
+			return
+		}
+
+		pkEntry := new(ServiceEntry)
+
+		toEntry := func(answer dnsmessage.Resource) {
+			switch rr := answer.Body.(type) {
+			case *dnsmessage.PTRResource:
+				// Create new entry for this
+				pkEntry.Name = rr.PTR.String()
+			case *dnsmessage.SRVResource:
+				pkEntry.Host = rr.Target.String()
+				pkEntry.Port = int(rr.Port)
+			case *dnsmessage.TXTResource:
+				pkEntry.Info = strings.Join(rr.TXT, "|")
+				pkEntry.InfoFields = []string{
+					answer.Header.Name.String(),
+					answer.Header.Type.String(),
+					answer.Header.Class.String(),
+					strconv.Itoa(int(answer.Header.TTL)),
+					strconv.Itoa(int(answer.Header.Length)),
+				}
+				pkEntry.hasTXT = true
+			case *dnsmessage.AResource:
+				// Pull out the IP
+				addr := net.IPv4(rr.A[0], rr.A[1], rr.A[2], rr.A[3])
+				pkEntry.Addr = addr // @Deprecated
+				pkEntry.AddrV4 = addr
+			case *dnsmessage.AAAAResource:
+				// Pull out the IP
+				//inp = ensureName(inprogress, answer.Header.Name.String())
+				//addr := net.IPv6(rr.A[0], rr.A[1], rr.A[2], rr.A[3])
+				//inp.Addr = rr.AAAA // @Deprecated
+				//pkEntry.AddrV6 = rr.AAAA
+			}
+		}
+		for i := 0; i <= maxMessageRecords && i < len(as); i++ {
+			a := as[i]
+			c.log.Debugf("received answer:%v", a)
 			if err != nil {
 				c.log.Warnf("Failed to parse mDNS packet %v", err)
 				return
 			}
-
-			log.Infof("receive message %v", h)
-
-			for i := 0; i <= maxMessageRecords; i++ {
-				q, err := p.Question()
-				if errors.Is(err, dnsmessage.ErrSectionDone) {
-					break
-				} else if err != nil {
-					c.log.Warnf("Failed to parse mDNS packet %v", err)
-					return
-				}
-				c.log.Infof("receive query %v", q)
-				if c.zone != nil {
-					resources, err := c.zone.Resources(h.ID, q)
-					if err != nil {
-						log.Warnf("build answer error %v", err)
-						return
+			toEntry(a)
+			for i := len(c.queries) - 1; i >= 0; i-- {
+				if c.queries[i].serviceAddr == a.Header.Name.String() {
+					if !c.queries[i].responed {
+						c.queries[i].resultChan <- queryResult{a, src}
+						c.queries[i].responed = true
 					}
-					c.sendAnswer(resources, src)
+					//c.queries = append(c.queries[:i], c.queries[i+1:]...)
 				}
-			}
-
-			err = p.SkipAllQuestions()
-			if err != nil {
-				c.log.Warnf("skipAllQuestions error %v", err)
-				return
-			}
-
-			for i := 0; i <= maxMessageRecords; i++ {
-				a, err := p.Answer()
-				if errors.Is(err, dnsmessage.ErrSectionDone) {
-					return
-				}
-				if err != nil {
-					c.log.Warnf("Failed to parse mDNS packet %v", err)
-					return
-				}
-				c.log.Infof("receive answer %v", a)
-				entry := toServiceEntry(a)
-				if !entry.complete() {
-					c.sendQuestion(entry.Name)
-				}
-				c.log.Infof("len %d", len(c.queries))
-				if len(c.queries) != 0 {
-					q := c.queries[0]
-					c.log.Infof("%s,%s,%v", q.serviceAddr, a.Header.Name.String(), q.serviceAddr == a.Header.Name.String())
-				}
-				if a.Header.Type == dnsmessage.TypeSRV {
-					c.log.Infof("receive SRV answer %v", a)
-					return
-				}
-				for i := len(c.queries) - 1; i >= 0; i-- {
-					if c.queries[i].serviceAddr == a.Header.Name.String() {
-						if !c.queries[i].responed {
-							c.queries[i].resultChan <- queryResult{a, src}
-							c.queries[i].responed = true
-						}
-						if entry != nil {
-							if entry.complete() {
-								c.queries[i].params.Entries <- entry
-							}
-
-						}
-						//c.queries = append(c.queries[:i], c.queries[i+1:]...)
+				if c.queries[i].serviceAddr != pkEntry.Name {
+					if pkEntry.complete() {
+						c.queries[i].params.Entries <- pkEntry
 					}
 				}
 			}
-		}()
+		}
 	}
 }
 
-func toServiceEntry(answer dnsmessage.Resource) *ServiceEntry {
+func toServiceEntry(inprogress map[string]*ServiceEntry, answer dnsmessage.Resource) *ServiceEntry {
 	var inp *ServiceEntry
 	// Map the in-progress responses
-	inprogress := make(map[string]*ServiceEntry)
+	//inprogress := make(map[string]*ServiceEntry)
 	switch rr := answer.Body.(type) {
 	case *dnsmessage.PTRResource:
 		// Create new entry for this
@@ -388,7 +400,6 @@ func toServiceEntry(answer dnsmessage.Resource) *ServiceEntry {
 		//inp.Addr = rr.AAAA // @Deprecated
 		//inp.AddrV6 = rr.AAAA
 	}
-	log.Infof("inp: %v,complete: %v", inp, inp.complete())
 	return inp
 }
 

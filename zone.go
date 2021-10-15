@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/apex/log"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -16,9 +15,6 @@ import (
 _services._dns-sd._udp.<domain>(enumAddrName) -> {
 	TypePTR->[TypePTR]
 }
-
-
-
 
 */
 
@@ -153,8 +149,8 @@ func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error
 	if err != nil {
 		panic(err)
 	}
-	log.Infof("%s,%s,%s,%s,%s", q.Name.String(), m.enumAddrName.String(), m.serviceAddrName.String(),
-		m.instanceAddrName.String(), m.HostName)
+	//log.Infof("%s,%s,%s,%s,%s", q.Name.String(), m.enumAddrName.String(), m.serviceAddrName.String(),
+	//	m.instanceAddrName.String(), m.HostName)
 	switch q.Name.String() {
 	case m.enumAddrName.String():
 		m.serviceEnum(builder, q)
@@ -169,7 +165,6 @@ func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error
 	default:
 		return nil, nil
 	}
-
 	return builder.Finish()
 }
 
@@ -217,16 +212,6 @@ func (m *MDNSService) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Q
 			Name: m.instanceAddrName,
 			Type: TypeANY,
 		})
-
-		m.instanceRecords(builder, dnsmessage.Question{
-			Name: m.instanceAddrName,
-			Type: dnsmessage.TypeA,
-		})
-
-		m.instanceRecords(builder, dnsmessage.Question{
-			Name: m.instanceAddrName,
-			Type: dnsmessage.TypeAAAA,
-		})
 	}
 }
 
@@ -241,7 +226,7 @@ func ip16ToByte(ip16 net.IP) [16]byte {
 
 /*
 <instance>.<service>.<domain>.(instanceAddrName) -> {
-	TypeANY->[TypeSRV,TypeTXT],
+	TypeANY->[TypeSRV,TypeA,TypeAAAA,TypeTXT],
 	TypeA->[TypeA],
 	TypeAAAA->[TypeAAAA],
 	TypeSRV->[TypeSRV,TypeA,TypeAAAA],

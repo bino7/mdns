@@ -36,15 +36,15 @@ func TestMdns(t *testing.T) {
 		done := make(chan struct{})
 		<-done
 	}()
+	params := DefaultParams("test")
+	go func() {
+		for entry := range params.Entries {
+			log.Infof("entry:%v", entry)
+		}
+	}()
 	go func() {
 		// Create the mDNS server, defer shutdown
 		wg.Wait()
-		params := DefaultParams("test")
-		go func() {
-			for entry := range params.Entries {
-				log.Infof("entry:%v", entry)
-			}
-		}()
 		h, src, err := Query(params)
 		log.Infof("header %v", h)
 		log.Infof("addr %v", src)
@@ -341,5 +341,3 @@ func TestBuilder(t *testing.T) {
 	log.Infof("Answer %v", a)
 
 }
-
-
