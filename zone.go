@@ -25,8 +25,8 @@ type Zone interface {
 	Resources(id uint16, q dnsmessage.Question) ([]byte, error)
 }
 
-// MDNSService is used to export a named service by implementing a Zone
-type MDNSService struct {
+// Service is used to export a named service by implementing a Zone
+type Service struct {
 	Instance string   // Instance name (e.g. "hostService name")
 	Service  string   // Service name (e.g. "_http._tcp.")
 	Domain   string   // If blank, assumes "local"
@@ -54,7 +54,7 @@ func validateFQDN(s string) error {
 	return nil
 }
 
-// NewMDNSService returns a new instance of MDNSService.
+// NewService returns a new instance of MDNSService.
 //
 // If domain, hostName, or ips is set to the zero value, then a default value
 // will be inferred from the operating system.
@@ -64,7 +64,7 @@ func validateFQDN(s string) error {
 // check to ensure that the instance name does not conflict with other instance
 // names, and, if required, select a new name.  There may also be conflicting
 // hostName A/AAAA records.
-func NewMDNSService(instance, service, domain, hostName string, port int, ips []net.IP, txt []string) (*MDNSService, error) {
+func NewService(instance, service, domain, hostName string, port int, ips []net.IP, txt []string) (*Service, error) {
 	// Sanity check inputs
 	if instance == "" {
 		return nil, fmt.Errorf("missing service instance name")
@@ -122,7 +122,7 @@ func NewMDNSService(instance, service, domain, hostName string, port int, ips []
 	instanceAddrName := dnsmessage.MustNewName(fmt.Sprintf("%s.%s.%s.", instance, trimDot(service), trimDot(domain)))
 	enumAddrName := dnsmessage.MustNewName(fmt.Sprintf("_services._dns-sd._udp.%s.", trimDot(domain)))
 
-	return &MDNSService{
+	return &Service{
 		Instance:         instance,
 		Service:          service,
 		Domain:           domain,
@@ -142,8 +142,8 @@ func trimDot(s string) string {
 }
 
 // Records returns DNS records in response to a DNS question.
-func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error) {
-	builder := newBulider(id)
+func (m *Service) Resources(id uint16, q dnsmessage.Question) ([]byte, error) {
+	builder := newBuilder(id)
 	builder.EnableCompression()
 	err := builder.StartAnswers()
 	if err != nil {
@@ -168,7 +168,7 @@ func (m *MDNSService) Resources(id uint16, q dnsmessage.Question) ([]byte, error
 	return builder.Finish()
 }
 
-func (m *MDNSService) serviceEnum(builder *dnsmessage.Builder, q dnsmessage.Question) {
+func (m *Service) serviceEnum(builder *dnsmessage.Builder, q dnsmessage.Question) {
 	switch q.Type {
 	case dnsmessage.TypePTR:
 		builder.PTRResource(
@@ -191,7 +191,7 @@ func (m *MDNSService) serviceEnum(builder *dnsmessage.Builder, q dnsmessage.Ques
 }
 */
 // serviceRecords is called when the query matches the service name
-func (m *MDNSService) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
+func (m *Service) serviceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
 	switch q.Type {
 	case dnsmessage.TypePTR:
 		// Build a PTR response for the service
@@ -234,7 +234,7 @@ func ip16ToByte(ip16 net.IP) [16]byte {
 }
 */
 // serviceRecords is called when the query matches the instance name
-func (m *MDNSService) instanceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
+func (m *Service) instanceRecords(builder *dnsmessage.Builder, q dnsmessage.Question) {
 	switch q.Type {
 	case TypeANY:
 		m.instanceRecords(builder, dnsmessage.Question{

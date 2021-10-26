@@ -209,7 +209,7 @@ func interfaceForRemote(remote string) (net.IP, error) {
 
 func (c *Conn) sendQuestion(name string) {
 	newID := uint16(atomic.AddInt32(&id, 1))
-	b := newBulider(newID)
+	b := newBuilder(newID)
 	b.EnableCompression()
 	b.StartQuestions()
 	err := b.Question(dnsmessage.Question{

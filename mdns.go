@@ -33,7 +33,7 @@ const (
 
 var id = int32(0)
 
-func  newBulider(id uint16) *dnsmessage.Builder {
+func newBuilder(id uint16) *dnsmessage.Builder {
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{
 		ID:       id,
 		Response: true,
