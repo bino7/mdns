@@ -55,7 +55,13 @@ const (
 )
 
 // newConn establishes a mDNS connection over an existing conn
-func newConn(conn *ipv4.PacketConn, config *Config) (*Conn, error) {
+func NewServer(config *Config) (*Conn, error) {
+	l, err := net.ListenUDP("udp4", ipv4Addr)
+	if err != nil {
+		panic(err)
+	}
+	conn := ipv4.NewPacketConn(l)
+
 	id = config.StartID
 
 	if config == nil {

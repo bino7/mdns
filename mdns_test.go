@@ -2,35 +2,27 @@ package mdns
 
 import (
 	"bytes"
-	"net"
 	"os"
 	"sync"
 	"testing"
 
 	"github.com/apex/log"
 	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/net/ipv4"
 )
 
 func TestMdns(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		l, err := net.ListenUDP("udp4", ipv4Addr)
-		if err != nil {
-			panic(err)
-		}
-		conn := ipv4.NewPacketConn(l)
-
 		host, _ := os.Hostname()
 		info := []string{"My awesome service"}
-		service, err := NewMDNSService(host, "test", "", "", 8000, nil, info)
+		service, err := NewService(host, "test", "", "", 8000, nil, info)
 		if err != nil {
 			panic(err)
 		}
 
 		// Create the mDNS server, defer shutdown
-		server, _ := newConn(conn, &Config{Zone: service})
+		server, _ := NewServer(&Config{Zone: service})
 		wg.Done()
 		defer server.Close()
 		done := make(chan struct{})
