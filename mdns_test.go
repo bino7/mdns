@@ -22,7 +22,7 @@ func TestMdns(t *testing.T) {
 		}
 
 		// Create the mDNS server, defer shutdown
-		server, _ := NewServer(&Config{Zone: service})
+		server, _ := NewConn(&Config{Zone: service})
 		wg.Done()
 		defer server.Close()
 		done := make(chan struct{})

@@ -8,9 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/apex/log"
 	"golang.org/x/net/dns/dnsmessage"
-	"golang.org/x/net/ipv4"
 )
 
 // ServiceEntry is returned after we query for a service
@@ -127,18 +125,10 @@ type client struct {
 func newClient(iface *net.Interface) (*client, error) {
 	// TODO(reddaly): At least attempt to bind to the port required in the spec.
 	// Create a IPv4 listener
-	uconn4, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		log.Errorf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
-	}
-	ipv4Conn:=ipv4.NewPacketConn(uconn4)
-
-	conn, err := newConn(ipv4Conn, &Config{Zone: nil})
+	conn, err := NewConn(&Config{Zone: nil})
 	if err != nil {
 		return nil, fmt.Errorf("[ERR] mdns: Failed to create client conn: %v", err)
 	}
-
-	
 
 	c := &client{
 		conn:     conn,
@@ -174,6 +164,6 @@ func (c *client) Close() error {
 
 // query is used to perform a lookup and stream results
 func (c *client) query(params *QueryParam) (dnsmessage.ResourceHeader, net.Addr, error) {
-	ctx,_:=context.WithCancel(context.Background())
+	ctx, _ := context.WithCancel(context.Background())
 	return c.conn.Query(ctx, params)
 }

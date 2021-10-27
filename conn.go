@@ -54,13 +54,12 @@ const (
 	responseTTL          = 120
 )
 
-// newConn establishes a mDNS connection over an existing conn
-func NewServer(config *Config) (*Conn, error) {
-	l, err := net.ListenUDP("udp4", ipv4Addr)
+// NewConn establishes a mDNS connection over an existing conn
+func NewConn(config *Config) (*Conn, error) {
+	conn, err := DefaultPacketConn()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	conn := ipv4.NewPacketConn(l)
 
 	id = config.StartID
 
@@ -122,6 +121,15 @@ func NewServer(config *Config) (*Conn, error) {
 	}()
 	wg.Wait()
 	return c, nil
+}
+
+func DefaultPacketConn() (*ipv4.PacketConn, error) {
+	l, err := net.ListenUDP("udp4", ipv4Addr)
+	if err != nil {
+		panic(err)
+	}
+	conn := ipv4.NewPacketConn(l)
+	return conn, err
 }
 
 // Close closes the mDNS Conn
